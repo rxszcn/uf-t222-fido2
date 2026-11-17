@@ -259,6 +259,16 @@ class TestCtap2(unittest.TestCase):
         self.assertIsNone(resp.user)
         self.assertIsNone(resp.number_of_credentials)
 
+    def test_get_assertion_requires_rp_id(self):
+        # rpId is mandatory in CTAP2; never let args() silently omit it.
+        ctap = self.mock_ctap()
+        ctap.device.call.reset_mock()
+
+        with self.assertRaises(ValueError):
+            ctap.get_assertion(None, b"\0" * 32)  # type: ignore[arg-type]
+
+        ctap.device.call.assert_not_called()
+
 
 EC_PRIV = 0x7452E599FEE739D8A653F6A507343D12D382249108A651402520B72F24FE7684
 EC_PUB_X = bytes.fromhex(

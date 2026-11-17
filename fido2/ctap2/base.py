@@ -453,7 +453,14 @@ class Ctap2:
         :param on_keepalive: Optional callback function to handle keep-alive messages
             from the authenticator.
         :return: The new assertion.
+        :raises ValueError: If rp_id is missing or empty.
         """
+        # rpId is a required CTAP2 parameter (map key 1). args() omits None values, so
+        # passing None would send a getAssertion request without rpId, which
+        # authenticators reject with MISSING_PARAMETER. Fail loudly on the client side
+        # instead, since this indicates a bug above us rather than bad device input.
+        if not rp_id:
+            raise ValueError("rp_id is required for CTAP2 getAssertion")
         logger.debug("Calling CTAP2 get_assertion")
         return AssertionResponse.from_dict(
             self.send_cbor(

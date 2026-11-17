@@ -938,7 +938,12 @@ class _Ctap2ClientBackend(_ClientBackend):
         rp_id,
         event,
     ):
-        rp_id = options.rp_id
+        # NOTE: Do NOT re-read rp_id from options here. The RP ID has already been
+        # resolved and verified by the ClientDataCollector, and options.rp_id may be
+        # omitted entirely (as is customary in WebAuthn, where it defaults to the
+        # origin). Overwriting it would pass None down to the CTAP2 getAssertion
+        # command, where args() silently drops None values, leaving the mandatory
+        # rpId parameter out of the CBOR request.
         allow_list = options.allow_credentials
         user_verification = options.user_verification
 

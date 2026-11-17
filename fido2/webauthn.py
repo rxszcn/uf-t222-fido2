@@ -559,6 +559,9 @@ class PublicKeyCredentialCreationOptions(_JsonDataObject):
 class PublicKeyCredentialRequestOptions(_JsonDataObject):
     challenge: bytes
     timeout: int | None = None
+    # None means "use the origin's effective domain", as per WebAuthn. It is resolved
+    # (and verified against the origin) by the ClientDataCollector before the request
+    # reaches a backend; the resolved value must be used for the CTAP2 rpId parameter.
     rp_id: str | None = None
     allow_credentials: Sequence[PublicKeyCredentialDescriptor] | None = None
     user_verification: UserVerificationRequirement | None = None

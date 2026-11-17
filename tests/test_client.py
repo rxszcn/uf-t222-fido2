@@ -34,14 +34,17 @@ from unittest import mock
 from fido2 import cbor
 from fido2.client import ClientError, DefaultClientDataCollector, Fido2Client
 from fido2.ctap import CtapError
-from fido2.ctap1 import RegistrationData
+from fido2.ctap1 import RegistrationData, SignatureData
 from fido2.ctap2 import AttestationResponse, Info
 from fido2.hid import CAPABILITY
 from fido2.utils import sha256
 from fido2.webauthn import (
     AttestationObject,
+    AuthenticatorData,
     CollectedClientData,
     PublicKeyCredentialCreationOptions,
+    PublicKeyCredentialRequestOptions,
+    UserVerificationRequirement,
 )
 
 APP_ID = "https://foo.example.com"
@@ -203,3 +206,95 @@ class TestFido2Client(unittest.TestCase):
         self.assertEqual(client_data.challenge, challenge)
 
         self.assertEqual(response.attestation_object.fmt, "fido-u2f")
+
+    def _ctap2_device(self, recorded):
+        """Build a mock CTAP2 device recording every raw command it receives."""
+
+        def call(cmd, data=b"", event=None, on_keepalive=None):
+            if cmd != 0x10:  # CTAPHID.CBOR
+                raise AssertionError(f"Unexpected command: {cmd}")
+            cmd_byte = data[0]
+            recorded.append((cmd_byte, data[1:]))
+            if cmd_byte == 0x04:  # authenticatorGetInfo
+                return b"\0" + _INFO_NO_PIN
+            if cmd_byte == 0x02:  # authenticatorGetAssertion
+                auth_data = AuthenticatorData.create(
+                    sha256(b"foo.example.com"),
+                    AuthenticatorData.FLAG.UP,
+                    1,
+                )
+                return b"\0" + cbor.encode(
+                    {
+                        1: {"type": "public-key", "id": b"cred-id"},
+                        2: auth_data,
+                        3: b"signature",
+                    }
+                )
+            raise CtapError(CtapError.ERR.INVALID_COMMAND)
+
+        dev = mock.Mock()
+        dev.capabilities = CAPABILITY.CBOR
+        dev.call.side_effect = call
+        return dev
+
+    def test_get_assertion_without_rp_id_sends_origin_as_rp_id(self):
+        recorded = []
+        client = Fido2Client(self._ctap2_device(recorded), CLIENT_DATA_COLLECTOR)
+
+        selection = client.get_assertion(
+            PublicKeyCredentialRequestOptions(
+                challenge=challenge,
+                user_verification=UserVerificationRequirement.DISCOURAGED,
+            )
+        )
+        self.assertEqual(selection.get_response(0).raw_id, b"cred-id")
+
+        auth_requests = [d for c, d in recorded if c == 0x02]
+        self.assertEqual(len(auth_requests), 1)
+        params = cbor.decode(auth_requests[0])
+        # rpId is mandatory for CTAP2 getAssertion...
+        self.assertIn(1, params)
+        # ...and must be the RP ID resolved from the origin, not the omitted value.
+        self.assertEqual(params[1], "foo.example.com")
+
+    def test_get_assertion_with_explicit_rp_id_sends_it_verbatim(self):
+        recorded = []
+        client = Fido2Client(self._ctap2_device(recorded), CLIENT_DATA_COLLECTOR)
+
+        client.get_assertion(
+            PublicKeyCredentialRequestOptions(
+                challenge=challenge,
+                rp_id="example.com",
+                user_verification=UserVerificationRequirement.DISCOURAGED,
+            )
+        )
+
+        auth_requests = [d for c, d in recorded if c == 0x02]
+        self.assertEqual(len(auth_requests), 1)
+        params = cbor.decode(auth_requests[0])
+        self.assertIn(1, params)
+        self.assertEqual(params[1], "example.com")
+
+    def test_get_assertion_ctap1_without_rp_id_uses_origin(self):
+        # Control group: the CTAP1 path never had the bug.
+        dev = mock.Mock()
+        dev.capabilities = 0  # No CTAP2
+        client = Fido2Client(dev, CLIENT_DATA_COLLECTOR)
+
+        ctap1_mock = mock.MagicMock()
+        ctap1_mock.get_version.return_value = "U2F_V2"
+        ctap1_mock.authenticate.return_value = SignatureData(
+            b"\x01" + b"\0\0\0\x01" + b"signature"
+        )
+        client._backend.ctap1 = ctap1_mock
+
+        client.get_assertion(
+            PublicKeyCredentialRequestOptions(
+                challenge=challenge,
+                allow_credentials=[{"type": "public-key", "id": b"cred-id"}],
+                user_verification=UserVerificationRequirement.DISCOURAGED,
+            )
+        )
+
+        args = ctap1_mock.authenticate.call_args
+        self.assertEqual(args.args[1], sha256(b"foo.example.com"))
